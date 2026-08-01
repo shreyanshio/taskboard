@@ -534,6 +534,39 @@ select.m-in{appearance:none;cursor:pointer}
 .lb-stat-val{font-weight:700;font-size:.83rem;color:var(--text)}
 .lb-stat-lbl{font-size:.6rem;color:var(--text3);text-transform:uppercase;letter-spacing:.04em}
 
+/* ══ DAILY ROUTINES ══ */
+.rt-list{display:flex;flex-direction:column;gap:10px;margin-top:6px}
+.rt-card{display:flex;align-items:center;gap:13px;background:var(--s1);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;transition:border-color .2s}
+.rt-card:hover{border-color:rgba(232,168,56,.25)}
+.rt-icon{width:38px;height:38px;border-radius:10px;background:var(--s2);display:flex;align-items:center;justify-content:center;font-size:1.15rem;flex-shrink:0}
+.rt-body{flex:1;min-width:0}
+.rt-name{font-weight:700;font-size:.92rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rt-streak{font-size:.72rem;color:var(--text2);margin-top:2px}
+.rt-streak b{color:var(--accent)}
+.rt-toggle{width:44px;height:26px;border-radius:20px;background:var(--s3);border:1.5px solid var(--border);position:relative;cursor:pointer;flex-shrink:0;transition:all .2s}
+.rt-toggle::after{content:'';position:absolute;top:2px;left:2px;width:19px;height:19px;border-radius:50%;background:var(--text3);transition:all .2s}
+.rt-toggle.on{background:rgba(56,201,168,.25);border-color:var(--accent2)}
+.rt-toggle.on::after{left:20px;background:var(--accent2)}
+.rt-menu-btn{width:30px;height:30px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text2);cursor:pointer;font-size:.95rem;flex-shrink:0;transition:all .2s}
+.rt-menu-btn:hover{border-color:var(--accent);color:var(--accent)}
+.rt-empty{text-align:center;padding:40px 20px;color:var(--text2);background:var(--s1);border:1px dashed var(--border);border-radius:var(--r)}
+.rt-empty-emo{font-size:2.2rem;margin-bottom:10px}
+.rt-add-btn{padding:9px 18px;background:linear-gradient(135deg,var(--accent),#c8821e);color:#050a08;border:none;border-radius:10px;font-family:'Plus Jakarta Sans',sans-serif;font-size:.85rem;font-weight:700;cursor:pointer;transition:all .2s}
+.rt-add-btn:hover{filter:brightness(1.08)}
+.rt-topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.rt-datenav{display:flex;align-items:center;gap:10px}
+.rt-summary-row{display:flex;gap:12px;flex-wrap:wrap;margin-top:16px}
+.rt-summary-card{flex:1;min-width:180px;background:var(--s2);border-radius:12px;padding:14px 16px}
+.rt-summary-lbl{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:5px}
+.rt-summary-val{font-size:.92rem;font-weight:700}
+.rt-summary-val.strong{color:var(--accent2)}
+.rt-summary-val.weak{color:var(--accent3)}
+.rt-ring-grid{display:flex;flex-wrap:wrap;gap:18px;justify-content:flex-start;margin-top:8px}
+.rt-ring-item{display:flex;flex-direction:column;align-items:center;width:82px}
+.rt-week-table{width:100%;border-collapse:collapse;margin-top:10px;font-size:.8rem}
+.rt-week-table th{color:var(--text3);font-weight:600;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;padding:6px 4px;text-align:center}
+.rt-week-table td{text-align:center;padding:8px 4px;border-top:1px solid var(--border)}
+.rt-week-pill{display:inline-block;min-width:34px;padding:3px 6px;border-radius:6px;font-weight:700;font-size:.75rem}
 @media(max-width:480px){
   .drawer{width:86vw}
 }
@@ -650,6 +683,9 @@ select.m-in{appearance:none;cursor:pointer}
       <div class="drawer-nav-item" id="dnav-analytics" onclick="showPage('analytics',this);closeDrawer()">
         <span class="drawer-nav-icon">🔥</span><span class="drawer-nav-label">Analytics & Streak</span>
       </div>
+      <div class="drawer-nav-item" id="dnav-routines" onclick="showPage('routines',this);closeDrawer()">
+        <span class="drawer-nav-icon">✅</span><span class="drawer-nav-label">Daily Routines</span>
+      </div>
       <div class="drawer-nav-item" id="dnav-leaderboard" onclick="showPage('leaderboard',this);closeDrawer()">
         <span class="drawer-nav-icon">🏆</span><span class="drawer-nav-label">Leaderboard</span>
       </div>
@@ -698,6 +734,7 @@ select.m-in{appearance:none;cursor:pointer}
     <button class="ntab"    data-p="calendar"  onclick="showPage('calendar',this)">📅 Calendar</button>
     <button class="ntab"    data-p="graphs"    onclick="showPage('graphs',this)">📊 Graphs</button>
     <button class="ntab"    data-p="analytics" onclick="showPage('analytics',this)">🔥 Analytics</button>
+    <button class="ntab"    data-p="routines" onclick="showPage('routines',this)">✅ Routines</button>
     <button class="ntab"    data-p="leaderboard" onclick="showPage('leaderboard',this)">🏆 Leaderboard</button>
     <button class="ntab"    data-p="profile"   onclick="showPage('profile',this)">👤 Profile</button>
   </div>
@@ -864,6 +901,45 @@ select.m-in{appearance:none;cursor:pointer}
       <div class="an-card"><div class="ac-title">📊 Categories</div><div class="ac-sub">Completion rate by category</div><div id="catProgress"></div></div>
       <div class="an-card full"><div class="ac-title">📅 4-Week Trend</div><div class="ac-sub">Added vs completed per week</div><div class="bar-chart" id="wkAnalytics"></div></div>
       <div class="an-card full"><div class="ac-title">⏰ This Month</div><div class="ac-sub">Daily activity heatmap</div><div id="monthHmap" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:10px"></div></div>
+    </div>
+  </div>
+
+  <!-- DAILY ROUTINES -->
+  <div class="page" id="page-routines">
+    <div class="ph"><h1>Daily <em>Routines</em> ✅</h1><p>Track your fixed habits every day and see what sticks.</p></div>
+
+    <div class="rt-topbar">
+      <div class="rt-datenav">
+        <button class="arrbtn" onclick="rtChangeDate(-1)">‹</button>
+        <div>
+          <div id="rt-dn-lbl" style="font-weight:700;font-size:.92rem"></div>
+          <div class="date-sub" id="rt-dn-sub"></div>
+        </div>
+        <button class="arrbtn" onclick="rtChangeDate(1)">›</button>
+        <button class="today-btn" onclick="rtGoToday()">Today</button>
+      </div>
+      <button class="rt-add-btn" onclick="openRoutineModal()">+ Add Routine</button>
+    </div>
+
+    <div class="rt-list" id="rtList"></div>
+
+    <div class="gc wide" style="margin-top:22px">
+      <div class="gc-title">📊 Consistency — last 30 days</div>
+      <div class="gc-sub">Completion % per routine</div>
+      <div class="rt-ring-grid" id="rtRings"></div>
+      <div class="rt-summary-row" id="rtSummary"></div>
+    </div>
+
+    <div class="gc wide" style="margin-top:16px">
+      <div class="gc-title">📈 Daily Completion Rate</div>
+      <div class="gc-sub">% of routines done each day — last 30 days</div>
+      <div class="lc-wrap"><svg class="lc" id="rtLine" viewBox="0 0 640 150" preserveAspectRatio="none"></svg></div>
+    </div>
+
+    <div class="gc wide" style="margin-top:16px">
+      <div class="gc-title">🗓 This Week</div>
+      <div class="gc-sub">Routines completed per day</div>
+      <table class="rt-week-table" id="rtWeekTable"></table>
     </div>
   </div>
 
@@ -1051,6 +1127,22 @@ select.m-in{appearance:none;cursor:pointer}
       <select class="m-in" id="e-pri" style="margin:0"><option value="normal">🟡 Normal</option><option value="high">🔴 High</option><option value="low">🟢 Low</option></select>
     </div>
     <div class="m-acts"><button class="btn-sec" onclick="closeEdit()">Cancel</button><button class="pbtn" onclick="saveEdit()">Save</button></div>
+  </div>
+</div>
+<div class="overlay" id="routineModal">
+  <div class="mbox">
+    <h3 id="rt-modal-title">✅ Add Routine</h3>
+    <div style="display:grid;grid-template-columns:64px 1fr;gap:10px">
+      <input class="m-in" id="rt-icon" placeholder="🏃" maxlength="4" style="text-align:center;font-size:1.2rem"/>
+      <input class="m-in" id="rt-name" placeholder="e.g. Exercise" maxlength="60"/>
+    </div>
+    <div class="m-acts" style="justify-content:space-between">
+      <button class="btn-danger" id="rt-delete-btn" style="display:none;width:auto;margin:0;padding:8px 14px" onclick="deleteRoutineModal()">🗑 Delete</button>
+      <div style="display:flex;gap:10px;margin-left:auto">
+        <button class="btn-sec" onclick="closeRoutineModal()">Cancel</button>
+        <button class="pbtn" onclick="saveRoutineModal()">Save</button>
+      </div>
+    </div>
   </div>
 </div>
 <div class="toast" id="toast"><span id="t-ico"></span><span id="t-msg"></span></div>
@@ -1959,6 +2051,7 @@ function showPage(p,btn){
   if(p==='graphs')buildGraphs();
   if(p==='calendar')renderCal();
   if(p==='analytics')renderAnalytics();
+  if(p==='routines')loadRoutinesPage();
   if(p==='profile')renderProfile();
   if(p==='leaderboard'){ renderLeaderboard(); startLeaderboardPolling(); } else { stopLeaderboardPolling(); }
   if(p==='insights'){ saveStudyHistory(); renderInsights(); }
@@ -2293,6 +2386,180 @@ function renderAnalytics(){
   const dm=new Date(new Date().getFullYear(),new Date().getMonth()+1,0).getDate();const ms=tKey().substring(0,7);let hh='';
   for(let day=1;day<=dm;day++){const ds=ms+'-'+String(day).padStart(2,'0');const cnt=getDay(ds).filter(t=>t.done).length;const al=cnt===0?.05:Math.min(cnt/5,1)*.85+.1;const isT=ds===tKey();hh+=`<div title="${ds}: ${cnt} done" style="width:28px;height:28px;border-radius:6px;background:rgba(232,168,56,${al});display:flex;align-items:center;justify-content:center;font-size:.67rem;color:${cnt>0?'rgba(255,255,255,.85)':'var(--text3)'};border:${isT?'1.5px solid var(--accent)':'1px solid transparent'}">${day}</div>`;}
   document.getElementById('monthHmap').innerHTML=hh;
+}
+
+// ══════════════════════════════════════
+//  DAILY ROUTINES
+// ══════════════════════════════════════
+let ROUTINES=[],RT_LOGS_BY_DATE={},rtViewDate=new Date(),RT_ANALYTICS=null,rtEditId=null;
+
+async function fetchRoutines(){
+  const {data,error}=await supa.from('routines').select('*').eq('user_id',CU_ID).order('order',{ascending:true});
+  if(error){toast('⚠️','Could not load routines: '+error.message,'err');return;}
+  ROUTINES=data||[];
+}
+async function fetchRoutineLogsForDate(dk){
+  const {data,error}=await supa.from('routine_logs').select('routine_id,done').eq('user_id',CU_ID).eq('date',dk);
+  if(error){RT_LOGS_BY_DATE[dk]=RT_LOGS_BY_DATE[dk]||new Set();return;}
+  RT_LOGS_BY_DATE[dk]=new Set((data||[]).filter(r=>r.done).map(r=>String(r.routine_id)));
+}
+async function loadRoutinesPage(force=false){
+  await fetchRoutines();
+  rtUpdateDateNav();
+  await fetchRoutineLogsForDate(dKey(rtViewDate));
+  renderRoutineList();
+  if(!RT_ANALYTICS||force){await loadRoutineAnalytics();}else{renderRoutineAnalytics();}
+}
+function rtUpdateDateNav(){
+  const dk=dKey(rtViewDate),tk=tKey();
+  document.getElementById('rt-dn-lbl').textContent=rtViewDate.toLocaleDateString('en-IN',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+  document.getElementById('rt-dn-sub').textContent=dk===tk?'Today':dk<tk?'Past — backfilling allowed':'Upcoming';
+}
+function rtChangeDate(d){
+  rtViewDate=new Date(rtViewDate);rtViewDate.setDate(rtViewDate.getDate()+d);
+  rtUpdateDateNav();
+  fetchRoutineLogsForDate(dKey(rtViewDate)).then(renderRoutineList);
+}
+function rtGoToday(){
+  rtViewDate=new Date();
+  rtUpdateDateNav();
+  fetchRoutineLogsForDate(dKey(rtViewDate)).then(renderRoutineList);
+}
+function renderRoutineList(){
+  const list=document.getElementById('rtList');if(!list)return;
+  if(!ROUTINES.length){
+    list.innerHTML='<div class="rt-empty"><div class="rt-empty-emo">🌱</div>No routines yet. Add your first one to start tracking!</div>';
+    return;
+  }
+  const dk=dKey(rtViewDate),doneSet=RT_LOGS_BY_DATE[dk]||new Set();
+  list.innerHTML=ROUTINES.map(r=>{
+    const done=doneSet.has(String(r.id));
+    const info=RT_ANALYTICS?.routines?.find(x=>String(x.id)===String(r.id));
+    const streak=info?info.streak:0;
+    return `<div class="rt-card">
+      <div class="rt-icon">${esc(r.icon||'✅')}</div>
+      <div class="rt-body">
+        <div class="rt-name">${esc(r.name)}</div>
+        <div class="rt-streak">${streak>0?`🔥 <b>${streak}</b> day streak`:'No streak yet'}</div>
+      </div>
+      <div class="rt-toggle ${done?'on':''}" onclick="toggleRoutineToday('${r.id}')"></div>
+      <button class="rt-menu-btn" onclick="openRoutineModal('${r.id}')">⋮</button>
+    </div>`;
+  }).join('');
+}
+async function toggleRoutineToday(id){
+  const dk=dKey(rtViewDate);
+  if(!RT_LOGS_BY_DATE[dk])RT_LOGS_BY_DATE[dk]=new Set();
+  const set=RT_LOGS_BY_DATE[dk];
+  const wasDone=set.has(String(id));
+  // optimistic UI update
+  if(wasDone)set.delete(String(id));else set.add(String(id));
+  renderRoutineList();
+  const {error}=await supa.from('routine_logs').upsert({
+    user_id:CU_ID,routine_id:id,date:dk,done:!wasDone
+  },{onConflict:'user_id,routine_id,date'});
+  if(error){
+    // revert on failure
+    if(wasDone)set.add(String(id));else set.delete(String(id));
+    renderRoutineList();
+    toast('⚠️','Could not save: '+error.message,'err');
+    return;
+  }
+  if(dk===tKey())loadRoutineAnalytics(); // streaks/rings only meaningfully shift for today's toggles
+}
+function openRoutineModal(id){
+  rtEditId=id||null;
+  const r=id?ROUTINES.find(x=>String(x.id)===String(id)):null;
+  document.getElementById('rt-modal-title').textContent=r?'✏️ Edit Routine':'✅ Add Routine';
+  document.getElementById('rt-icon').value=r?(r.icon||'✅'):'✅';
+  document.getElementById('rt-name').value=r?r.name:'';
+  document.getElementById('rt-delete-btn').style.display=r?'block':'none';
+  document.getElementById('routineModal').classList.add('open');
+}
+function closeRoutineModal(){document.getElementById('routineModal').classList.remove('open');rtEditId=null;}
+async function saveRoutineModal(){
+  const name=document.getElementById('rt-name').value.trim();
+  const icon=document.getElementById('rt-icon').value.trim()||'✅';
+  if(!name){toast('⚠️','Give the routine a name!','err');return;}
+  if(rtEditId){
+    const {data,error}=await supa.from('routines').update({name,icon}).eq('id',rtEditId).select().single();
+    if(error){toast('⚠️','Update failed: '+error.message,'err');return;}
+    const idx=ROUTINES.findIndex(x=>String(x.id)===String(rtEditId));
+    if(idx>-1)ROUTINES[idx]={...ROUTINES[idx],...data};
+    toast('✓','Routine updated!','suc');
+  }else{
+    const order=ROUTINES.length;
+    const {data,error}=await supa.from('routines').insert({name,icon,order}).select().single();
+    if(error){toast('⚠️','Save failed: '+error.message,'err');return;}
+    ROUTINES.push(data);
+    toast('✓','Routine added!','suc');
+  }
+  closeRoutineModal();
+  renderRoutineList();
+  loadRoutineAnalytics();
+}
+async function deleteRoutineModal(){
+  if(!rtEditId)return;
+  if(!confirm('Delete this routine? All of its logs will be removed too.'))return;
+  const {error}=await supa.from('routines').delete().eq('id',rtEditId);
+  if(error){toast('⚠️','Delete failed: '+error.message,'err');return;}
+  ROUTINES=ROUTINES.filter(x=>String(x.id)!==String(rtEditId));
+  Object.values(RT_LOGS_BY_DATE).forEach(set=>set.delete(String(rtEditId)));
+  closeRoutineModal();
+  renderRoutineList();
+  toast('🗑','Routine deleted.','err');
+  loadRoutineAnalytics();
+}
+async function loadRoutineAnalytics(){
+  if(!ROUTINES.length){RT_ANALYTICS=null;renderRoutineAnalytics();return;}
+  try{
+    RT_ANALYTICS=await apiFetch('/api/routines/analytics?days=30');
+  }catch(e){console.error(e);RT_ANALYTICS=null;}
+  renderRoutineList();
+  renderRoutineAnalytics();
+}
+function renderRoutineAnalytics(){
+  const rings=document.getElementById('rtRings'),summary=document.getElementById('rtSummary');
+  const line=document.getElementById('rtLine'),wkTable=document.getElementById('rtWeekTable');
+  if(!rings)return;
+  if(!RT_ANALYTICS||!RT_ANALYTICS.routines?.length){
+    rings.innerHTML='<div style="color:var(--text2);font-size:.85rem">Add a routine and start checking it off to see analytics here.</div>';
+    summary.innerHTML='';line.innerHTML='';wkTable.innerHTML='';
+    return;
+  }
+  const colors=['var(--accent)','var(--accent2)','var(--accent4)','var(--accent5)','var(--accent3)'];
+  rings.innerHTML=RT_ANALYTICS.routines.map((r,i)=>{
+    const rr=32,c=2*Math.PI*rr,dash=(r.completion_pct/100)*c,color=colors[i%colors.length];
+    return `<div class="rt-ring-item"><svg width="80" height="80" viewBox="0 0 80 80"><circle class="ring-track" cx="40" cy="40" r="${rr}"/><circle class="ring-prog" cx="40" cy="40" r="${rr}" stroke="${color}" stroke-dasharray="${dash} ${c}"/><text class="ring-val" x="40" y="45" text-anchor="middle" transform="rotate(90,40,40)">${r.completion_pct}%</text></svg><div style="font-size:.7rem;text-align:center;margin-top:4px;color:var(--text2)">${esc(r.icon)} ${esc(r.name)}</div></div>`;
+  }).join('');
+  const s=RT_ANALYTICS.strongest,w=RT_ANALYTICS.weakest;
+  summary.innerHTML=`
+    <div class="rt-summary-card"><div class="rt-summary-lbl">💪 Strongest</div><div class="rt-summary-val strong">${s?esc(s.icon)+' '+esc(s.name)+' — '+s.completion_pct+'%':'—'}</div></div>
+    <div class="rt-summary-card"><div class="rt-summary-lbl">🪫 Needs Work</div><div class="rt-summary-val weak">${w?esc(w.icon)+' '+esc(w.name)+' — '+w.completion_pct+'%':'—'}</div></div>
+  `;
+  // line chart — daily completion % over the window
+  const d=RT_ANALYTICS.daily_series||[];
+  if(d.length&&line){
+    const W=640,H=150,pad=28;
+    const xs=d.map((_,i)=>pad+i*(W-2*pad)/Math.max(d.length-1,1));
+    const ys=d.map(x=>H-14-(x.pct/100)*(H-28));
+    let g='';[0,25,50,75,100].forEach(v=>{const y=H-14-(v/100)*(H-28);g+=`<line x1="${pad}" y1="${y}" x2="${W-pad}" y2="${y}" stroke="rgba(255,255,255,.05)" stroke-width="1"/><text x="${pad-4}" y="${y+3}" text-anchor="end" font-size="9" fill="var(--text3)">${v}%</text>`;});
+    let aP=`M ${xs[0]},${H-14} `;xs.forEach((x,i)=>aP+=`L ${x},${ys[i]} `);aP+=`L ${xs[xs.length-1]},${H-14} Z`;
+    let lP=`M ${xs[0]},${ys[0]}`;xs.slice(1).forEach((x,i)=>lP+=` L ${x},${ys[i+1]}`);
+    const step=Math.max(Math.ceil(d.length/8),1);
+    const labels=d.map((x,i)=>i%step===0||i===d.length-1?`<text x="${xs[i]}" y="${H}" text-anchor="middle" font-size="9" fill="var(--text3)">${x.date.slice(5)}</text>`:'').join('');
+    line.innerHTML=`<defs><linearGradient id="rtg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--accent2)" stop-opacity=".35"/><stop offset="100%" stop-color="var(--accent2)" stop-opacity="0"/></linearGradient></defs>${g}<path d="${aP}" fill="url(#rtg)"/><path d="${lP}" fill="none" stroke="var(--accent2)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>${labels}`;
+  }
+  // this week table
+  const wk=RT_ANALYTICS.week||[];
+  if(wkTable){
+    wkTable.innerHTML=`<tr>${wk.map(x=>`<th>${x.label}</th>`).join('')}</tr><tr>${wk.map(x=>{
+      const pct=x.total?Math.round((x.done/x.total)*100):0;
+      const color=pct>=75?'rgba(56,201,168,.25)':pct>=40?'rgba(232,168,56,.22)':'rgba(232,92,92,.2)';
+      const tc=pct>=75?'var(--accent2)':pct>=40?'var(--accent)':'var(--accent3)';
+      return `<td><span class="rt-week-pill" style="background:${color};color:${tc}">${x.done}/${x.total}</span></td>`;
+    }).join('')}</tr>`;
+  }
 }
 
 // PROFILE
