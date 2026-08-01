@@ -4,7 +4,7 @@ import hashlib
 import os
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -706,18 +706,25 @@ async def leaderboard(date: str | None = None) -> list[dict[str, Any]]:
 
 @app.get("/api/routines/analytics")
 async def routines_analytics(
-    days: int = 30,
+    month: int | None = None,
+    year: int | None = None,
     profile: dict[str, Any] = Depends(current_profile),
 ) -> dict[str, Any]:
-    """Aggregated analytics for the Daily Routines feature.
+    """Aggregated analytics for the Daily Routines feature, scoped to a single
+    calendar month — the same month shown in the habit-tracker grid on the
+    frontend — so the pie chart / line graph always match what the user is
+    looking at and ticking off.
 
-    Returns, for a rolling window of `days` days ending today (Asia/Kolkata):
-      - per-routine completion % + current streak + longest streak
-      - a day-by-day overall completion percentage series (for the line chart)
-      - which routine is the strongest / weakest performer
-      - a per-day-of-week breakdown for the current week (Mon..today)
+    `month` (1-12) and `year` default to the current month in Asia/Kolkata.
+    Streaks are always computed relative to *today*, independent of which
+    month the user is currently browsing in the grid.
     """
-    days = max(1, min(days, 365))
+    tz = ZoneInfo("Asia/Kolkata")
+    today = datetime.now(tz).date()
+    month = month or today.month
+    year = year or today.year
+    if not (1 <= month <= 12):
+        raise HTTPException(status_code=400, detail="month must be 1-12")
 
     routines = await sb.request(
         "GET",
@@ -730,6 +737,8 @@ async def routines_analytics(
     )
     if not routines:
         return {
+            "month": month,
+            "year": year,
             "routines": [],
             "daily_series": [],
             "strongest": None,
@@ -737,33 +746,37 @@ async def routines_analytics(
             "week": [],
         }
 
-    today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
-    start_date = today - timedelta(days=days - 1)
+    start_date = date(year, month, 1)
+    end_date = date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
+    month_dates = [
+        (start_date + timedelta(days=i)).isoformat()
+        for i in range((end_date - start_date).days + 1)
+    ]
 
-    logs = await sb.request(
+    month_logs = await sb.request(
         "GET",
         "routine_logs",
         params={
             "user_id": f"eq.{profile['id']}",
-            "date": f"gte.{start_date.isoformat()}",
+            "and": f"(date.gte.{start_date.isoformat()},date.lte.{end_date.isoformat()})",
             "select": "routine_id,date,done",
         },
     )
 
-    # date -> set(routine_id) that were done that day
+    # date -> set(routine_id) done that day, within the selected month
     done_by_date: dict[str, set[str]] = {}
-    done_by_routine: dict[str, set[str]] = {r["id"]: set() for r in routines}
-    for row in logs or []:
+    done_by_routine_month: dict[str, set[str]] = {r["id"]: set() for r in routines}
+    for row in month_logs or []:
         if not row.get("done"):
             continue
         d = row["date"]
         rid = str(row["routine_id"])
         done_by_date.setdefault(d, set()).add(rid)
-        if rid in done_by_routine:
-            done_by_routine[rid].add(d)
+        if rid in done_by_routine_month:
+            done_by_routine_month[rid].add(d)
 
     total_routines = len(routines)
-    all_dates = [(start_date + timedelta(days=i)).isoformat() for i in range(days)]
+    total_days = len(month_dates)
 
     daily_series = [
         {
@@ -774,34 +787,51 @@ async def routines_analytics(
             if total_routines
             else 0,
         }
-        for d in all_dates
+        for d in month_dates
     ]
+
+    # Separate, wider lookback purely for streak math — a streak shouldn't
+    # reset to 0 just because the user paged the grid to look at last month.
+    streak_lookback_start = today - timedelta(days=400)
+    streak_logs = await sb.request(
+        "GET",
+        "routine_logs",
+        params={
+            "user_id": f"eq.{profile['id']}",
+            "date": f"gte.{streak_lookback_start.isoformat()}",
+            "select": "routine_id,date,done",
+        },
+    )
+    done_by_routine_all: dict[str, set[str]] = {r["id"]: set() for r in routines}
+    for row in streak_logs or []:
+        if row.get("done"):
+            done_by_routine_all.setdefault(str(row["routine_id"]), set()).add(row["date"])
 
     per_routine: list[dict[str, Any]] = []
     for r in routines:
         rid = r["id"]
-        done_dates = done_by_routine.get(rid, set())
-        completion_pct = round((len(done_dates & set(all_dates)) / days) * 100)
+        month_done = done_by_routine_month.get(rid, set())
+        completion_pct = round((len(month_done) / total_days) * 100) if total_days else 0
 
-        # current streak: consecutive days ending today (or yesterday if today not logged yet)
+        all_done = done_by_routine_all.get(rid, set())
         streak = 0
         cursor = today
-        # allow the streak to "start" from yesterday if today hasn't been checked yet
-        if cursor.isoformat() not in done_dates:
-            cursor = cursor - timedelta(days=1)
-        while cursor.isoformat() in done_dates:
+        if cursor.isoformat() not in all_done:
+            cursor -= timedelta(days=1)
+        while cursor.isoformat() in all_done:
             streak += 1
             cursor -= timedelta(days=1)
 
-        # longest streak within the window
         longest = 0
         run = 0
-        for d in all_dates:
-            if d in done_dates:
+        cursor = streak_lookback_start
+        while cursor <= today:
+            if cursor.isoformat() in all_done:
                 run += 1
                 longest = max(longest, run)
             else:
                 run = 0
+            cursor += timedelta(days=1)
 
         per_routine.append(
             {
@@ -809,7 +839,8 @@ async def routines_analytics(
                 "name": r["name"],
                 "icon": r.get("icon") or "✅",
                 "completion_pct": completion_pct,
-                "days_done": len(done_dates & set(all_dates)),
+                "days_done": len(month_done),
+                "total_days": total_days,
                 "streak": streak,
                 "longest_streak": longest,
             }
@@ -836,6 +867,9 @@ async def routines_analytics(
         )
 
     return {
+        "month": month,
+        "year": year,
+        "days_in_month": total_days,
         "routines": per_routine,
         "daily_series": daily_series,
         "strongest": strongest,
@@ -855,7 +889,10 @@ async def rest_proxy(
         raise HTTPException(status_code=403, detail="Table is not allowed")
 
     method = request.method
-    raw_params = dict(request.query_params)
+    raw_params: dict[str, Any] = {}
+    for key in request.query_params.keys():
+        values = request.query_params.getlist(key)
+        raw_params[key] = values if len(values) > 1 else values[0]
     params = restricted_params(table, raw_params, profile)
 
     if table == "leaderboard_view" and method != "GET":
