@@ -4,8 +4,10 @@ import hashlib
 import os
 import time
 import uuid
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -200,7 +202,7 @@ def clean_payload(payload: Any) -> Any:
 
 def restricted_params(table: str, raw_params: dict[str, str], profile: dict[str, Any]) -> dict[str, str]:
     params = dict(raw_params)
-    if table in {"tasks", "quick_notes"}:
+    if table in {"tasks", "quick_notes", "routines", "routine_logs"}:
         params["user_id"] = f"eq.{profile['id']}"
     elif table == "study_history":
         params["user_id"] = f"eq.{profile['id']}"
@@ -702,13 +704,153 @@ async def leaderboard(date: str | None = None) -> list[dict[str, Any]]:
     return result
 
 
+@app.get("/api/routines/analytics")
+async def routines_analytics(
+    days: int = 30,
+    profile: dict[str, Any] = Depends(current_profile),
+) -> dict[str, Any]:
+    """Aggregated analytics for the Daily Routines feature.
+
+    Returns, for a rolling window of `days` days ending today (Asia/Kolkata):
+      - per-routine completion % + current streak + longest streak
+      - a day-by-day overall completion percentage series (for the line chart)
+      - which routine is the strongest / weakest performer
+      - a per-day-of-week breakdown for the current week (Mon..today)
+    """
+    days = max(1, min(days, 365))
+
+    routines = await sb.request(
+        "GET",
+        "routines",
+        params={
+            "user_id": f"eq.{profile['id']}",
+            "select": "id,name,icon,order",
+            "order": "order.asc,created_at.asc",
+        },
+    )
+    if not routines:
+        return {
+            "routines": [],
+            "daily_series": [],
+            "strongest": None,
+            "weakest": None,
+            "week": [],
+        }
+
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    start_date = today - timedelta(days=days - 1)
+
+    logs = await sb.request(
+        "GET",
+        "routine_logs",
+        params={
+            "user_id": f"eq.{profile['id']}",
+            "date": f"gte.{start_date.isoformat()}",
+            "select": "routine_id,date,done",
+        },
+    )
+
+    # date -> set(routine_id) that were done that day
+    done_by_date: dict[str, set[str]] = {}
+    done_by_routine: dict[str, set[str]] = {r["id"]: set() for r in routines}
+    for row in logs or []:
+        if not row.get("done"):
+            continue
+        d = row["date"]
+        rid = str(row["routine_id"])
+        done_by_date.setdefault(d, set()).add(rid)
+        if rid in done_by_routine:
+            done_by_routine[rid].add(d)
+
+    total_routines = len(routines)
+    all_dates = [(start_date + timedelta(days=i)).isoformat() for i in range(days)]
+
+    daily_series = [
+        {
+            "date": d,
+            "done": len(done_by_date.get(d, set())),
+            "total": total_routines,
+            "pct": round((len(done_by_date.get(d, set())) / total_routines) * 100)
+            if total_routines
+            else 0,
+        }
+        for d in all_dates
+    ]
+
+    per_routine: list[dict[str, Any]] = []
+    for r in routines:
+        rid = r["id"]
+        done_dates = done_by_routine.get(rid, set())
+        completion_pct = round((len(done_dates & set(all_dates)) / days) * 100)
+
+        # current streak: consecutive days ending today (or yesterday if today not logged yet)
+        streak = 0
+        cursor = today
+        # allow the streak to "start" from yesterday if today hasn't been checked yet
+        if cursor.isoformat() not in done_dates:
+            cursor = cursor - timedelta(days=1)
+        while cursor.isoformat() in done_dates:
+            streak += 1
+            cursor -= timedelta(days=1)
+
+        # longest streak within the window
+        longest = 0
+        run = 0
+        for d in all_dates:
+            if d in done_dates:
+                run += 1
+                longest = max(longest, run)
+            else:
+                run = 0
+
+        per_routine.append(
+            {
+                "id": rid,
+                "name": r["name"],
+                "icon": r.get("icon") or "✅",
+                "completion_pct": completion_pct,
+                "days_done": len(done_dates & set(all_dates)),
+                "streak": streak,
+                "longest_streak": longest,
+            }
+        )
+
+    ranked = sorted(per_routine, key=lambda x: x["completion_pct"], reverse=True)
+    strongest = ranked[0] if ranked else None
+    weakest = ranked[-1] if ranked else None
+
+    week_start = today - timedelta(days=today.weekday())  # Monday
+    week: list[dict[str, Any]] = []
+    for i in range(7):
+        d = week_start + timedelta(days=i)
+        if d > today:
+            break
+        dk = d.isoformat()
+        week.append(
+            {
+                "date": dk,
+                "label": d.strftime("%a"),
+                "done": len(done_by_date.get(dk, set())),
+                "total": total_routines,
+            }
+        )
+
+    return {
+        "routines": per_routine,
+        "daily_series": daily_series,
+        "strongest": strongest,
+        "weakest": weakest,
+        "week": week,
+    }
+
+
 @app.api_route("/api/rest/{table}", methods=["GET", "POST", "PATCH", "DELETE"])
 async def rest_proxy(
     table: str,
     request: Request,
     profile: dict[str, Any] = Depends(current_profile),
 ) -> Any:
-    allowed = {"users", "tasks", "quick_notes", "study_history", "leaderboard_view"}
+    allowed = {"users", "tasks", "quick_notes", "study_history", "leaderboard_view", "routines", "routine_logs"}
     if table not in allowed:
         raise HTTPException(status_code=403, detail="Table is not allowed")
 
@@ -740,7 +882,7 @@ async def rest_proxy(
     if method == "POST":
         if table == "users":
             return [profile]
-        if table in {"tasks", "quick_notes"}:
+        if table in {"tasks", "quick_notes", "routines", "routine_logs"}:
             if isinstance(payload, list):
                 payload = [{**item, "user_id": profile["id"]} for item in payload]
             else:
