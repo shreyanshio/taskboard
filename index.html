@@ -542,12 +542,26 @@ select.m-in{appearance:none;cursor:pointer}
 .rt-empty{text-align:center;padding:40px 20px;color:var(--text2);background:var(--s1);border:1px dashed var(--border);border-radius:var(--r)}
 .rt-empty-emo{font-size:2.2rem;margin-bottom:10px}
 
-.rt-grid-wrap{background:var(--s1);border:1px solid var(--border);border-radius:var(--r);overflow-x:auto;position:relative}
+.rt-grid-wrap{background:var(--s1);border:1.5px solid var(--border);border-radius:var(--r);overflow-x:auto;position:relative}
 .rt-grid-table{border-collapse:collapse;width:100%;font-size:.78rem}
-.rt-grid-table th,.rt-grid-table td{border:1px solid var(--border);text-align:center;white-space:nowrap}
-.rt-grid-table thead th{background:var(--s2);color:var(--text2);font-weight:700;font-size:.68rem;padding:8px 4px;position:sticky;top:0;z-index:2}
+.rt-grid-table th,.rt-grid-table td{border:1px solid rgba(255,255,255,.13);text-align:center;white-space:nowrap}
+.rt-grid-table thead th{background:var(--s2);color:var(--text2);font-weight:700;font-size:.68rem;padding:8px 4px;position:sticky;top:0;z-index:2;border-bottom:2px solid var(--accent)!important}
 .rt-grid-table thead th.rt-day-today{color:var(--accent);background:rgba(232,168,56,.12)}
 .rt-th-habit{position:sticky;left:0;z-index:3;background:var(--s2)!important;text-align:left!important;padding:8px 12px!important;min-width:170px}
+.rt-th-habit-stack{display:flex;flex-direction:column;gap:1px}
+.rt-th-day-lbl{font-size:.56rem;color:var(--text3);letter-spacing:.14em;font-weight:700}
+.rt-th-habit-lbl{font-size:.74rem;color:var(--text);letter-spacing:.06em;font-weight:800}
+.rt-month-picker{position:relative}
+.rt-month-trigger{background:transparent;border:none;cursor:pointer;padding:2px 4px;text-align:left;color:inherit;font-family:inherit;border-radius:8px;transition:background .2s}
+.rt-month-trigger:hover{background:var(--s2)}
+.rt-month-pop{position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:12px;box-shadow:var(--shadow);z-index:20;display:none;min-width:190px}
+.rt-month-pop.open{display:block}
+.rt-month-pop-yr{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;font-weight:700;font-size:.85rem}
+.arrbtn.sm{width:26px;height:26px;font-size:.8rem}
+.rt-month-pop-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.rt-month-pop-btn{padding:7px 0;border-radius:8px;border:1px solid var(--border);background:var(--s1);color:var(--text2);font-size:.7rem;font-weight:700;letter-spacing:.06em;cursor:pointer;transition:all .2s;font-family:'Plus Jakarta Sans',sans-serif}
+.rt-month-pop-btn:hover{border-color:var(--accent);color:var(--accent)}
+.rt-month-pop-btn.on{background:var(--accent);border-color:var(--accent);color:#050a08}
 .rt-td-habit{position:sticky;left:0;z-index:1;background:var(--s1);text-align:left!important;padding:0!important;min-width:170px}
 .rt-habit-cell{display:flex;align-items:center;gap:8px;padding:8px 10px}
 .rt-habit-icon{font-size:1rem;flex-shrink:0}
@@ -921,9 +935,19 @@ select.m-in{appearance:none;cursor:pointer}
     <div class="rt-topbar">
       <div class="rt-datenav">
         <button class="arrbtn" onclick="rtChangeMonth(-1)">‹</button>
-        <div>
-          <div id="rt-dn-lbl" style="font-weight:700;font-size:.92rem"></div>
-          <div class="date-sub" id="rt-dn-sub"></div>
+        <div class="rt-month-picker">
+          <button class="rt-month-trigger" onclick="toggleRtMonthPicker()">
+            <div id="rt-dn-lbl" style="font-weight:700;font-size:.92rem"></div>
+            <div class="date-sub" id="rt-dn-sub"></div>
+          </button>
+          <div class="rt-month-pop" id="rtMonthPop">
+            <div class="rt-month-pop-yr">
+              <button class="arrbtn sm" onclick="rtPopYear(-1)">‹</button>
+              <span id="rtPopYearLbl"></span>
+              <button class="arrbtn sm" onclick="rtPopYear(1)">›</button>
+            </div>
+            <div class="rt-month-pop-grid" id="rtMonthPopGrid"></div>
+          </div>
         </div>
         <button class="arrbtn" onclick="rtChangeMonth(1)">›</button>
         <button class="today-btn" onclick="rtGoToday()">This Month</button>
@@ -958,6 +982,11 @@ select.m-in{appearance:none;cursor:pointer}
         <div class="gc-title">📈 Daily Completion Rate</div>
         <div class="gc-sub" id="rtLineSub">% of habits done each day this month</div>
         <div class="lc-wrap"><svg class="lc" id="rtLine" viewBox="0 0 640 150" preserveAspectRatio="none"></svg></div>
+      </div>
+      <div class="gc wide">
+        <div class="gc-title">📊 Weekly Average Completion</div>
+        <div class="gc-sub" id="rtBarSub">Average completion rate, week by week, for the selected month</div>
+        <div class="bar-chart" id="rtBarChart"></div>
       </div>
     </div>
   </div>
@@ -2472,6 +2501,33 @@ function rtGoToday(){
   rtUpdateMonthLabel();
   fetchRoutineLogsForMonth(rtViewMonth,rtViewYear).then(()=>{renderRoutineGrid();loadRoutineAnalytics();});
 }
+// ── month quick-picker popover (JAN–DEC grid, poster-style) ──
+let rtPopYearVal=rtViewYear;
+function toggleRtMonthPicker(){
+  const pop=document.getElementById('rtMonthPop');
+  const willOpen=!pop.classList.contains('open');
+  pop.classList.toggle('open',willOpen);
+  if(willOpen){rtPopYearVal=rtViewYear;renderRtMonthPop();}
+}
+function rtPopYear(delta){rtPopYearVal+=delta;renderRtMonthPop();}
+function renderRtMonthPop(){
+  document.getElementById('rtPopYearLbl').textContent=rtPopYearVal;
+  const names=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  document.getElementById('rtMonthPopGrid').innerHTML=names.map((n,i)=>{
+    const m=i+1,on=m===rtViewMonth&&rtPopYearVal===rtViewYear;
+    return `<button class="rt-month-pop-btn ${on?'on':''}" onclick="rtPickMonth(${m},${rtPopYearVal})">${n}</button>`;
+  }).join('');
+}
+function rtPickMonth(m,y){
+  rtViewMonth=m;rtViewYear=y;
+  const pop=document.getElementById('rtMonthPop');if(pop)pop.classList.remove('open');
+  rtUpdateMonthLabel();
+  fetchRoutineLogsForMonth(rtViewMonth,rtViewYear).then(()=>{renderRoutineGrid();loadRoutineAnalytics();});
+}
+document.addEventListener('click',(e)=>{
+  const pop=document.getElementById('rtMonthPop');
+  if(pop&&pop.classList.contains('open')&&!e.target.closest('.rt-month-picker'))pop.classList.remove('open');
+});
 function renderRoutineGrid(){
   const wrap=document.getElementById('rtGridWrap'),empty=document.getElementById('rtGridEmpty'),table=document.getElementById('rtGridTable');
   if(!table)return;
@@ -2482,7 +2538,7 @@ function renderRoutineGrid(){
   empty.style.display='none';table.style.display='table';
   const dim=rtDaysInMonth(rtViewMonth,rtViewYear);
   const now=new Date(),todayStr=(rtViewMonth===now.getMonth()+1&&rtViewYear===now.getFullYear())?rtDateStr(rtViewYear,rtViewMonth,now.getDate()):null;
-  let head=`<thead><tr><th class="rt-th-habit">HABIT</th>`;
+  let head=`<thead><tr><th class="rt-th-habit"><div class="rt-th-habit-stack"><span class="rt-th-day-lbl">DAY</span><span class="rt-th-habit-lbl">HABIT</span></div></th>`;
   for(let day=1;day<=dim;day++){
     const isToday=todayStr===rtDateStr(rtViewYear,rtViewMonth,day);
     head+=`<th class="${isToday?'rt-day-today':''}">${day}</th>`;
@@ -2583,6 +2639,7 @@ function renderRoutineAnalytics(){
   if(!RT_ANALYTICS||!RT_ANALYTICS.routines?.length){
     pieSvg.innerHTML='';legend.innerHTML='<div style="color:var(--text2);font-size:.8rem">Add a habit and tick a few boxes to see analytics here.</div>';
     summary.innerHTML='';line.innerHTML='';wkTable.innerHTML='';
+    const barEl=document.getElementById('rtBarChart');if(barEl)barEl.innerHTML='';
     return;
   }
   const colors=['#f0b842','#42dba9','#a87de8','#e8d038','#e85c5c','#5cb8e8','#e87dc0','#7de8a8','#e8a05c','#8a9eff','#c8e85c','#e85c9e','#5ce8d0','#e89e5c','#a0e85c'];
@@ -2636,6 +2693,28 @@ function renderRoutineAnalytics(){
       const tc=pct>=75?'var(--accent2)':pct>=40?'var(--accent)':'var(--accent3)';
       return `<td><span class="rt-week-pill" style="background:${color};color:${tc}">${x.done}/${x.total}</span></td>`;
     }).join('')}</tr>`;
+  }
+
+  // ── weekly average completion — bar chart, grouped from daily_series so it
+  // auto-adapts whether the month has 28, 29, 30 or 31 days ──
+  const barEl=document.getElementById('rtBarChart');
+  if(barEl){
+    const series=RT_ANALYTICS.daily_series||[];
+    if(!series.length){
+      barEl.innerHTML='<div style="color:var(--text2);font-size:.8rem">No data yet for this month.</div>';
+    }else{
+      const weeks=[];
+      for(let i=0;i<series.length;i+=7){
+        const chunk=series.slice(i,i+7);
+        const avg=Math.round(chunk.reduce((a,x)=>a+x.pct,0)/chunk.length);
+        weeks.push({label:`W${weeks.length+1}`,range:`${i+1}–${Math.min(i+7,series.length)}`,avg});
+      }
+      barEl.innerHTML=weeks.map(w=>{
+        const h=Math.max(w.avg,w.avg>0?4:2);
+        const bg=w.avg>=75?'linear-gradient(180deg,var(--accent2),#1fae86)':w.avg>=40?'linear-gradient(180deg,var(--accent),#c8821e)':'linear-gradient(180deg,var(--accent3),#b23f3f)';
+        return `<div class="bw"><div style="width:100%;height:${h}%;background:${bg};border-radius:5px 5px 0 0;min-height:4px" class="bar" data-v="${w.avg}% · days ${w.range}"><span class="blbl">${w.label}</span></div></div>`;
+      }).join('');
+    }
   }
 }
 
