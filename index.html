@@ -1409,16 +1409,13 @@ async function syncStudyToCloud(force){
     }
     
     try{
-      await supa.from('users').update({
-        total_study_seconds: lifetime,
-        today_study_seconds: todaySecs,
-        study_date: dKey(new Date()),
+      await apiFetch('/api/study/sync',{method:'POST',body:JSON.stringify({
         study_subjects: subjects.map(s=>({id:s.id,name:s.name,secs:s.secs,color:s.color})),
         study_timer: activeTimer
-      }).eq('id',CU_ID);
+      })});
     }catch(e){ /* non-fatal — leaderboard/resume just show stale data until next sync */ }
   }
-  syncHistoryToCloud(); // keep the day-by-day Insights history in sync too
+  await syncHistoryToCloud(); // keep the day-by-day Insights history in sync too
 }
 /* ── push today's finished/in-progress daily snapshot to `study_history` for cross-device Insights ── */
 async function syncHistoryToCloud(){
@@ -1615,6 +1612,14 @@ function _liveSecs(rec,subj){
   if(!rec) return subj.secs;
   return rec.baseSecs+Math.floor((Date.now()-rec.startTs)/1000);
 }
+function commitRunningStudyTimers(){
+  imap.forEach((rec,id)=>{
+    const subj=subjects.find(s=>s.id===id);
+    if(subj) subj.secs=_liveSecs(rec,subj);
+    clearInterval(rec.handle);
+  });
+  imap.clear();
+}
 
 /* update a single card's visual state without re-rendering */
 function _updateSubjCard(id,running){
@@ -1643,6 +1648,7 @@ function resetSubjectTimer(id){
   if(!subj) return;
   subj.secs=0;
   studySave();
+  syncStudyToCloud(true);
   const tel=document.getElementById('stm_'+id);
   if(tel) tel.textContent=studyFmt(0);
   const pb=document.getElementById('spb_'+id);
@@ -1656,6 +1662,7 @@ function deleteSubject(id){
   if(imap.has(id)){clearInterval(imap.get(id).handle);imap.delete(id);}
   subjects=subjects.filter(s=>s.id!==id);
   studySave();
+  syncStudyToCloud(true);
   // Remove just that card from DOM
   const row=document.getElementById('srow_'+id);
   if(row) row.parentElement.remove(); // remove wrapper div
@@ -1836,13 +1843,9 @@ async function doSignup(){
     try{localStorage.setItem('tb_pending_name',n);}catch(e){}
     return;
   }
-  const {error:insErr}=await supa.from('users').insert({name:n,email,auth_id:authData.user.id});
+  // The backend creates the profile exactly once during signup. Re-querying
+  // it through launchApp avoids duplicate auth_id rows and preserves server validation.
   hideLoader();
-  if(insErr){
-    if(insErr.message&&insErr.message.toLowerCase().includes('duplicate')) showErr('su-err','That name is already taken — pick another.');
-    else showErr('su-err','Account created but profile setup failed: '+insErr.message);
-    return;
-  }
   showOk('su-ok','✓ Account created! Signing you in…');
   setTimeout(()=>launchApp(),600);
 }
@@ -1857,13 +1860,14 @@ async function doLogin(){
   await launchApp();
 }
 
-function doLogout(){
-  imap.forEach(rec=>clearInterval(rec.handle));imap.clear();
+async function doLogout(){
+  commitRunningStudyTimers();
   clearInterval(pomIv);
   studySave();
-  saveStudyHistory(); // save final snapshot before logout
-  syncStudyToCloud(true); // push final totals so the leaderboard reflects this session
-  supa.auth.signOut();
+  saveStudyHistory();
+  // Wait for the protected backend sync before clearing the user/session state.
+  try{ await syncStudyToCloud(true); }catch(e){ console.warn('Final study sync failed',e); }
+  await supa.auth.signOut();
   CU=null;CU_ID=null;DB={};subjects=[];_SK='';_SDK='';
   document.getElementById('app').classList.remove('visible');
   document.getElementById('auth').classList.add('visible');
@@ -3055,6 +3059,7 @@ setInterval(()=>{
   const today=dKey(new Date());
   if(storedDate && storedDate!==today){
     // Snapshot yesterday's numbers into history/cloud before wiping today's counters
+    commitRunningStudyTimers();
     saveStudyHistory();
     syncStudyToCloud(true);
     imap.forEach(rec=>clearInterval(rec.handle));
@@ -3069,7 +3074,28 @@ setInterval(()=>{
 },60000);
 
 // Save history on page unload
-window.addEventListener('beforeunload',()=>{ studySave(); saveStudyHistory(); syncStudyToCloud(true); });
+let _unloadFlushed=false;
+function flushStudyOnUnload(){
+  if(_unloadFlushed)return;
+  _unloadFlushed=true;
+  commitRunningStudyTimers();
+  studySave(); saveStudyHistory();
+  if(!CU_ID)return;
+  const payload=JSON.stringify({study_subjects:subjects.map(s=>({id:s.id,name:s.name,secs:s.secs,color:s.color})),study_timer:null});
+  const token=apiSession()?.access_token;
+  const url=API_BASE+'/api/study/sync';
+  if(token){
+    const headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'};
+    fetch(url,{method:'POST',headers,body:payload,keepalive:true}).catch(()=>{});
+    const hist=getStudyHistory(), today=tKey(), snap=hist[today]||{};
+    const totalSecs=Object.values(snap).reduce((a,v)=>a+(v.secs||0),0);
+    fetch(API_BASE+'/api/rest/study_history',{method:'POST',headers:{...headers,'x-upsert':'true'},body:JSON.stringify({date:today,subjects:snap,total_secs:totalSecs,updated_at:new Date().toISOString()}),keepalive:true}).catch(()=>{});
+  }else{
+    syncStudyToCloud(true);
+  }
+}
+window.addEventListener('pagehide',flushStudyOnUnload);
+window.addEventListener('beforeunload',flushStudyOnUnload);
 
 // Pull changes whenever the user focuses/switches back to this tab
 document.addEventListener('visibilitychange', () => {
