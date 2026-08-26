@@ -4,6 +4,8 @@ import hashlib
 import os
 import time
 import uuid
+from calendar import monthrange
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -11,7 +13,7 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from telegram_bot import (
@@ -20,7 +22,7 @@ from telegram_bot import (
     button_handler,
     error_handler,
     link,
-    pending_telegram_tokens,
+    telegram_token_store,
     send_welcome_message,
     start,
     stats,
@@ -97,17 +99,42 @@ class TaskPatch(BaseModel):
 
 
 class ProfilePatch(BaseModel):
+    """Fields a user may edit directly; progression is server-owned."""
+
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
     status_message: str | None = None
     workspace_title: str | None = None
     layout_sort: str | None = None
     avatar_url: str | None = None
-    xp_total: int | None = None
-    current_level: int | None = None
-    total_study_seconds: int | None = None
-    today_study_seconds: int | None = None
-    study_date: str | None = None
-    study_subjects: list[dict[str, Any]] | None = None
+
+
+class StudySubject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int | str
+    name: str
+    secs: int = 0
+    color: str = "#38c9a8"
+
+
+class StudyTimer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject_id: int | str
+    started_at: int
+    subject_name: str
+
+
+class StudySyncBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    study_subjects: list[StudySubject] = []
+    study_timer: StudyTimer | None = None
+
+
+
 
 
 async def fetch_telegram_avatar_data_url(telegram_id: int) -> str | None:
@@ -206,7 +233,7 @@ def clean_payload(payload: Any) -> Any:
 
 def restricted_params(table: str, raw_params: dict[str, str], profile: dict[str, Any]) -> dict[str, str]:
     params = dict(raw_params)
-    if table in {"tasks", "quick_notes"}:
+    if table in {"tasks", "quick_notes", "routines", "routine_logs"}:
         params["user_id"] = f"eq.{profile['id']}"
     elif table == "study_history":
         params["user_id"] = f"eq.{profile['id']}"
@@ -215,8 +242,120 @@ def restricted_params(table: str, raw_params: dict[str, str], profile: dict[str,
     return params
 
 
+PROFILE_EDIT_FIELDS = {
+    "name", "status_message", "workspace_title", "layout_sort", "avatar_url",
+}
+PROTECTED_PROFILE_FIELDS = {
+    "auth_id", "xp_total", "current_level", "total_study_seconds",
+    "today_study_seconds", "study_date", "study_subjects", "study_timer",
+}
+REST_PATCH_FIELDS: dict[str, set[str]] = {
+    "users": PROFILE_EDIT_FIELDS,
+    "tasks": {"title", "description", "category", "priority", "date", "time", "subtasks", "done", "pinned", "done_at"},
+    "quick_notes": {"content"},
+    "study_history": {"date", "subjects", "total_secs", "updated_at"},
+}
+REST_POST_FIELDS: dict[str, set[str]] = {
+    "tasks": {"user_id", "title", "description", "category", "priority", "date", "time", "subtasks", "done", "pinned", "done_at"},
+    "quick_notes": {"user_id", "content"},
+    "study_history": {"user_id", "date", "subjects", "total_secs", "updated_at"},
+    "routines": {"user_id", "name", "icon", "order", "archived"},
+    "routine_logs": {"user_id", "routine_id", "date", "done"},
+}
+REST_PATCH_FIELDS.update({
+    "routines": {"name", "icon", "order", "archived"},
+    "routine_logs": {"done"},
+})
+
+
+def validate_payload_fields(payload: Any, allowed: set[str], label: str) -> Any:
+    """Reject unknown keys instead of forwarding arbitrary user-controlled columns."""
+    items = payload if isinstance(payload, list) else [payload]
+    if not all(isinstance(item, dict) for item in items):
+        raise HTTPException(status_code=422, detail=f"{label} payload must be an object or list of objects")
+    unknown = sorted({str(key) for item in items for key in item if key not in allowed})
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unsupported {label} fields: {', '.join(unknown)}")
+    return payload
+
+
+def sanitize_study_subjects(subjects: list[StudySubject]) -> list[dict[str, Any]]:
+    """Normalize study data and cap impossible values before persisting it."""
+    if len(subjects) > 10:
+        raise HTTPException(status_code=422, detail="A maximum of 10 study subjects is allowed")
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for subject in subjects:
+        subject_id = str(subject.id)
+        if subject_id in seen_ids:
+            raise HTTPException(status_code=422, detail="Study subject IDs must be unique")
+        seen_ids.add(subject_id)
+        name = subject.name.strip()
+        if not name or len(name) > 80:
+            raise HTTPException(status_code=422, detail="Study subject names must be 1–80 characters")
+        secs = int(subject.secs)
+        if secs < 0 or secs > 86400:
+            raise HTTPException(status_code=422, detail="Study seconds must be between 0 and 86400 per subject")
+        normalized.append({"id": subject.id, "name": name, "secs": secs, "color": subject.color})
+    return normalized
+
+
+async def study_history_total(profile_id: Any, exclude_date: str | None = None) -> int:
+    rows = await sb.request(
+        "GET",
+        "study_history",
+        params={
+            "user_id": f"eq.{profile_id}",
+            "select": "date,total_secs,subjects",
+            "limit": "5000",
+        },
+    )
+    total = 0
+    for row in rows or []:
+        if exclude_date and row.get("date") == exclude_date:
+            continue
+        value = row.get("total_secs")
+        if value is None:
+            subjects = row.get("subjects") or {}
+            value = sum(int(item.get("secs", item.get("seconds", 0)) or 0) for item in subjects.values() if isinstance(item, dict))
+        total += max(0, int(value or 0))
+    return total
+
+
+async def persist_validated_study(profile: dict[str, Any], body: StudySyncBody) -> dict[str, Any]:
+    today = today_key()
+    subjects = sanitize_study_subjects(body.study_subjects)
+    subject_ids = {str(subject["id"]) for subject in subjects}
+    timer = body.study_timer.model_dump() if body.study_timer else None
+    if timer:
+        if str(timer["subject_id"]) not in subject_ids:
+            raise HTTPException(status_code=422, detail="The active timer must reference an existing subject")
+        now = int(time.time())
+        if timer["started_at"] > now + 60 or timer["started_at"] < now - 172800:
+            raise HTTPException(status_code=422, detail="The active timer timestamp is outside the allowed range")
+        timer["subject_name"] = next(s["name"] for s in subjects if str(s["id"]) == str(timer["subject_id"]))
+    today_total = sum(subject["secs"] for subject in subjects)
+    historic_total = await study_history_total(profile["id"], exclude_date=today)
+    patch = {
+        "study_subjects": subjects,
+        "study_timer": timer,
+        "study_date": today,
+        "today_study_seconds": today_total,
+        "total_study_seconds": historic_total + today_total,
+    }
+    rows = await sb.request(
+        "PATCH",
+        "users",
+        params={"id": f"eq.{profile['id']}"},
+        headers={"prefer": "return=representation"},
+        json=patch,
+    )
+    return rows[0] if rows else {**profile, **patch}
+
+
 @app.on_event("startup")
 async def startup() -> None:
+
     global telegram_app
     index_path = os.path.join(BASE_DIR, "index.html")
     print(f"[startup] index.html: {'found' if os.path.isfile(index_path) else 'MISSING'} at {index_path}")
@@ -293,39 +432,27 @@ async def google_start(request: Request) -> RedirectResponse:
 
 @app.get("/api/auth/telegram/start")
 async def telegram_start() -> RedirectResponse:
-    """Generate a one-time token and redirect the user to the Telegram bot deep-link."""
-    token = uuid.uuid4().hex
-    pending_telegram_tokens[token] = {
-        "created_at": time.time(),
-        "telegram_id": None,
-        "display_name": None,
-        "telegram_username": None,
-        "verified": False,
-    }
-    # Housekeeping: remove tokens older than 5 minutes
+    """Create a persistent, single-use token and redirect to the Telegram bot."""
     now = time.time()
-    expired = [k for k, v in pending_telegram_tokens.items() if now - v["created_at"] > 300]
-    for k in expired:
-        del pending_telegram_tokens[k]
+    token = uuid.uuid4().hex
+    telegram_token_store.create(token, now)
+    telegram_token_store.purge_expired(now - 300)
     return RedirectResponse(f"https://t.me/taskboard7_bot?start={token}")
 
 
 @app.get("/api/auth/telegram/callback")
 async def telegram_callback(token: str, request: Request) -> RedirectResponse:
     """Verify the bot-filled token, create/sign-in the Supabase user, redirect with session hash."""
-    entry = pending_telegram_tokens.get(token)
-    if not entry or not entry.get("verified"):
+    entry = telegram_token_store.consume_verified(token, time.time())
+    if not entry:
         raise HTTPException(status_code=400, detail="Invalid or expired token. Please try again.")
-    if time.time() - entry["created_at"] > 300:
-        pending_telegram_tokens.pop(token, None)
-        raise HTTPException(status_code=400, detail="Token expired. Please try again.")
 
+    # The token is consumed atomically before external calls, so it cannot be replayed.
     telegram_id = entry["telegram_id"]
     display_name = entry["display_name"] or "User"
     telegram_username = entry.get("telegram_username") or ""
     verify_chat_id = entry.get("verify_chat_id")
     verify_message_id = entry.get("verify_message_id")
-    pending_telegram_tokens.pop(token, None)
 
     email = f"tg_{telegram_id}@telegram.local"
     password = hashlib.sha256(
@@ -547,8 +674,17 @@ async def update_me(
     return rows[0] if rows else {**profile, **patch}
 
 
+@app.post("/api/study/sync")
+async def sync_study(
+    body: StudySyncBody,
+    profile: dict[str, Any] = Depends(current_profile),
+) -> dict[str, Any]:
+    return await persist_validated_study(profile, body)
+
+
 @app.get("/api/bootstrap")
 async def bootstrap(profile: dict[str, Any] = Depends(current_profile)) -> dict[str, Any]:
+
     tasks = await sb.request(
         "GET",
         "tasks",
@@ -630,6 +766,75 @@ async def delete_task(
         headers={"prefer": "return=minimal"},
     )
     return {"ok": True}
+
+
+@app.get("/api/routines/analytics")
+async def routine_analytics(
+    month: int | None = None,
+    year: int | None = None,
+    profile: dict[str, Any] = Depends(current_profile),
+) -> dict[str, Any]:
+    target = datetime.now().date()
+    month = month or target.month
+    year = year or target.year
+    if month < 1 or month > 12 or year < 2000 or year > 2100:
+        raise HTTPException(status_code=422, detail="Invalid analytics month or year")
+    start = f"{year:04d}-{month:02d}-01"
+    end = f"{year:04d}-{month:02d}-{monthrange(year, month)[1]:02d}"
+    routines = await sb.request(
+        "GET", "routines", params={
+            "user_id": f"eq.{profile['id']}",
+            "select": "id,name,icon,order",
+            "order": "order.asc",
+        }
+    )
+    # Use a bounded PostgREST range for the selected month.
+    logs = await sb.request(
+        "GET", "routine_logs", params={
+            "user_id": f"eq.{profile['id']}",
+            "date": f"and(gte.{start},lte.{end})",
+            "select": "routine_id,date,done",
+        }
+    )
+    done_by_routine: dict[str, set[str]] = {}
+    for row in logs or []:
+        if row.get("done"):
+            done_by_routine.setdefault(str(row["routine_id"]), set()).add(row["date"])
+    days_in_month = monthrange(year, month)[1]
+    today = target.isoformat()
+    routine_stats: list[dict[str, Any]] = []
+    for routine in routines or []:
+        rid = str(routine["id"])
+        done_dates = done_by_routine.get(rid, set())
+        streak = 0
+        cursor = min(target, datetime(year, month, days_in_month).date())
+        while cursor >= datetime(year, month, 1).date() and cursor.isoformat() in done_dates:
+            streak += 1
+            cursor -= timedelta(days=1)
+        days_done = len(done_dates)
+        routine_stats.append({
+            "id": routine["id"],
+            "name": routine.get("name") or "Habit",
+            "icon": routine.get("icon") or "✅",
+            "days_done": days_done,
+            "completion_pct": round(days_done / days_in_month * 100, 1),
+            "streak": streak,
+        })
+    daily_series = []
+    for day in range(1, days_in_month + 1):
+        date_key = f"{year:04d}-{month:02d}-{day:02d}"
+        done = sum(date_key in done_by_routine.get(str(r["id"]), set()) for r in routines or [])
+        daily_series.append({"date": date_key, "done": done, "total": len(routines or []), "pct": round(done / len(routines) * 100, 1) if routines else 0})
+    week_end = min(target, datetime(year, month, days_in_month).date())
+    week = []
+    for offset in range(6, -1, -1):
+        day = week_end - timedelta(days=offset)
+        date_key = day.isoformat()
+        done = sum(date_key in done_by_routine.get(str(r["id"]), set()) for r in routines or [])
+        week.append({"label": day.strftime("%a"), "date": date_key, "done": done, "total": len(routines or [])})
+    strongest = max(routine_stats, key=lambda row: row["days_done"], default=None)
+    weakest = min(routine_stats, key=lambda row: row["days_done"], default=None)
+    return {"month": month, "year": year, "routines": routine_stats, "daily_series": daily_series, "week": week, "strongest": strongest, "weakest": weakest}
 
 
 @app.get("/api/leaderboard")
@@ -721,7 +926,7 @@ async def rest_proxy(
     request: Request,
     profile: dict[str, Any] = Depends(current_profile),
 ) -> Any:
-    allowed = {"users", "tasks", "quick_notes", "study_history", "leaderboard_view"}
+    allowed = {"users", "tasks", "quick_notes", "study_history", "leaderboard_view", "routines", "routine_logs"}
     if table not in allowed:
         raise HTTPException(status_code=403, detail="Table is not allowed")
 
@@ -743,17 +948,25 @@ async def rest_proxy(
             raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
     else:
         raw_payload = None
-    # IMPORTANT: only strip nulls on INSERT (POST). On PATCH an explicit
-    # `null` is intentional (e.g. clearing an active study_timer, or
-    # unlinking telegram_chat_id) — stripping it there silently prevented
-    # the field from ever being cleared, which is the stale study_timer
-    # bug (bot kept "seeing" an old timer after it was stopped on the web).
+    # Validate every write before forwarding it to Supabase. In particular,
+    # the users table never accepts auth_id or progression fields here.
+    if method == "POST":
+        if table == "users":
+            validate_payload_fields(raw_payload, PROFILE_EDIT_FIELDS | {"email", "auth_id"}, "users")
+        elif table not in REST_POST_FIELDS:
+            raise HTTPException(status_code=405, detail=f"POST is not supported for {table}")
+        else:
+            validate_payload_fields(raw_payload, REST_POST_FIELDS[table], table)
+    elif method == "PATCH":
+        if table not in REST_PATCH_FIELDS:
+            raise HTTPException(status_code=405, detail=f"PATCH is not supported for {table}")
+        validate_payload_fields(raw_payload, REST_PATCH_FIELDS[table], table)
     payload = clean_payload(raw_payload) if method == "POST" else raw_payload
 
     if method == "POST":
         if table == "users":
             return [profile]
-        if table in {"tasks", "quick_notes"}:
+        if table in {"tasks", "quick_notes", "routines", "routine_logs"}:
             if isinstance(payload, list):
                 payload = [{**item, "user_id": profile["id"]} for item in payload]
             else:
@@ -763,7 +976,8 @@ async def rest_proxy(
                 payload = [{**item, "user_id": str(profile["id"])} for item in payload]
             else:
                 payload = {**payload, "user_id": str(profile["id"])}
-        prefer = "resolution=merge-duplicates,return=representation" if request.headers.get("x-upsert") == "true" else "return=representation"
+        allow_upsert = table in {"study_history", "routine_logs"} and request.headers.get("x-upsert") == "true"
+        prefer = "resolution=merge-duplicates,return=representation" if allow_upsert else "return=representation"
         return await sb.request("POST", table, params=params, headers={"prefer": prefer}, json=payload)
 
     if method == "PATCH":
