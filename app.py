@@ -1,11 +1,9 @@
 import asyncio
 import base64
-import calendar
 import hashlib
 import os
 import time
 import uuid
-from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -48,16 +46,16 @@ ALLOWED_ORIGINS = [
 app = FastAPI(title="TaskBoard Railway API")
 telegram_app: Application | None = None
 
-IST = timezone(timedelta(hours=5, minutes=30))
-
-
-def _ist_today() -> date:
-    return datetime.now(IST).date()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    # No cookies are used anywhere in this app — auth is a bearer token in the
+    # Authorization header, so allow_credentials must be False. Combining
+    # allow_credentials=True with a wildcard "*" origin is invalid per the
+    # CORS spec and browsers will silently reject those responses; keeping
+    # this False lets ALLOWED_ORIGINS stay "*" safely, or be locked down to
+    # specific origins later without touching this line again.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -208,7 +206,7 @@ def clean_payload(payload: Any) -> Any:
 
 def restricted_params(table: str, raw_params: dict[str, str], profile: dict[str, Any]) -> dict[str, str]:
     params = dict(raw_params)
-    if table in {"tasks", "quick_notes", "routines", "routine_logs"}:
+    if table in {"tasks", "quick_notes"}:
         params["user_id"] = f"eq.{profile['id']}"
     elif table == "study_history":
         params["user_id"] = f"eq.{profile['id']}"
@@ -635,13 +633,20 @@ async def delete_task(
 
 
 @app.get("/api/leaderboard")
-async def leaderboard(date: str | None = None) -> list[dict[str, Any]]:
+async def leaderboard(
+    date: str | None = None,
+    profile: dict[str, Any] = Depends(current_profile),
+) -> list[dict[str, Any]]:
     """Daily leaderboard by default (today, Asia/Kolkata) — pass ?date=all
     for the all-time totals board, or ?date=YYYY-MM-DD for any specific day.
     Daily rankings are built from `study_history`, which every device syncs
     to roughly every 30s while a timer is running (see syncStudyToCloud in
     script.js) — so scores here update within ~30s of someone studying,
     without needing a separate realtime/websocket pipeline.
+
+    Requires a valid bearer token (any logged-in user) — previously this was
+    open with no auth check, so anyone with the URL could pull every user's
+    name, avatar, and study stats.
     """
     if date == "all":
         try:
@@ -710,152 +715,13 @@ async def leaderboard(date: str | None = None) -> list[dict[str, Any]]:
     return result
 
 
-def _rt_week_scaffold(today: date, daily_count: dict[str, int], total_habits: int) -> list[dict[str, Any]]:
-    """Mon–Sun table for the *actual current* week (independent of whichever
-    month/year is being viewed in the grid) — days that haven't happened yet
-    get total=0 so they don't drag down the "this week" pills.
-    """
-    monday = today - timedelta(days=today.weekday())
-    week: list[dict[str, Any]] = []
-    for i in range(7):
-        d = monday + timedelta(days=i)
-        week.append(
-            {
-                "label": d.strftime("%a"),
-                "done": daily_count.get(d.isoformat(), 0),
-                "total": total_habits if d <= today else 0,
-            }
-        )
-    return week
-
-
-@app.get("/api/routines/analytics")
-async def routines_analytics(
-    month: int | None = None,
-    year: int | None = None,
-    profile: dict[str, Any] = Depends(current_profile),
-) -> dict[str, Any]:
-    today = _ist_today()
-    month = month or today.month
-    year = year or today.year
-    if not (1 <= month <= 12):
-        raise HTTPException(status_code=400, detail="month must be between 1 and 12")
-
-    routines = await sb.request(
-        "GET",
-        "routines",
-        params={
-            "user_id": f"eq.{profile['id']}",
-            "select": "id,name,icon,order",
-            "order": "order.asc",
-        },
-    )
-    if not routines:
-        return {
-            "routines": [],
-            "strongest": None,
-            "weakest": None,
-            "daily_series": [],
-            "week": _rt_week_scaffold(today, {}, 0),
-        }
-
-    # Pull every completed log (not just the viewed month) so streaks — which
-    # look backward from "today" regardless of which month is on screen —
-    # stay correct even when the user is browsing a past/future month.
-    logs = await sb.request(
-        "GET",
-        "routine_logs",
-        params={
-            "user_id": f"eq.{profile['id']}",
-            "done": "eq.true",
-            "select": "routine_id,date",
-        },
-    )
-
-    per_routine_dates: dict[str, set[date]] = {}
-    daily_count: dict[str, int] = {}
-    for row in logs:
-        try:
-            d = date.fromisoformat(row["date"])
-        except (TypeError, ValueError):
-            continue
-        rid = str(row["routine_id"])
-        per_routine_dates.setdefault(rid, set()).add(d)
-        key = d.isoformat()
-        daily_count[key] = daily_count.get(key, 0) + 1
-
-    days_in_month = calendar.monthrange(year, month)[1]
-    month_start = date(year, month, 1)
-    month_end = date(year, month, days_in_month)
-    if (year, month) > (today.year, today.month):
-        effective_days = 0  # future month — nothing to score yet
-    elif (year, month) == (today.year, today.month):
-        effective_days = today.day
-    else:
-        effective_days = days_in_month
-
-    def streak_for(rid: str) -> int:
-        dates = per_routine_dates.get(rid, set())
-        cursor = today if today in dates else today - timedelta(days=1)
-        if cursor not in dates:
-            return 0
-        count = 0
-        while cursor in dates:
-            count += 1
-            cursor -= timedelta(days=1)
-        return count
-
-    routine_stats: list[dict[str, Any]] = []
-    for r in routines:
-        rid = str(r["id"])
-        dates = per_routine_dates.get(rid, set())
-        days_done = sum(1 for d in dates if month_start <= d <= month_end)
-        completion_pct = round((days_done / effective_days) * 100) if effective_days else 0
-        routine_stats.append(
-            {
-                "id": r["id"],
-                "name": r["name"],
-                "icon": r.get("icon") or "✅",
-                "days_done": days_done,
-                "streak": streak_for(rid),
-                "completion_pct": completion_pct,
-            }
-        )
-
-    strongest = max(routine_stats, key=lambda x: x["completion_pct"])
-    weakest = min(routine_stats, key=lambda x: x["completion_pct"])
-
-    daily_series = []
-    for day_num in range(1, effective_days + 1):
-        d = date(year, month, day_num)
-        done_count = daily_count.get(d.isoformat(), 0)
-        pct = round((done_count / len(routines)) * 100)
-        daily_series.append({"date": d.isoformat(), "pct": pct})
-
-    return {
-        "routines": routine_stats,
-        "strongest": {
-            "icon": strongest["icon"],
-            "name": strongest["name"],
-            "completion_pct": strongest["completion_pct"],
-        },
-        "weakest": {
-            "icon": weakest["icon"],
-            "name": weakest["name"],
-            "completion_pct": weakest["completion_pct"],
-        },
-        "daily_series": daily_series,
-        "week": _rt_week_scaffold(today, daily_count, len(routines)),
-    }
-
-
 @app.api_route("/api/rest/{table}", methods=["GET", "POST", "PATCH", "DELETE"])
 async def rest_proxy(
     table: str,
     request: Request,
     profile: dict[str, Any] = Depends(current_profile),
 ) -> Any:
-    allowed = {"users", "tasks", "quick_notes", "study_history", "leaderboard_view", "routines", "routine_logs"}
+    allowed = {"users", "tasks", "quick_notes", "study_history", "leaderboard_view"}
     if table not in allowed:
         raise HTTPException(status_code=403, detail="Table is not allowed")
 
@@ -887,7 +753,7 @@ async def rest_proxy(
     if method == "POST":
         if table == "users":
             return [profile]
-        if table in {"tasks", "quick_notes", "routines", "routine_logs"}:
+        if table in {"tasks", "quick_notes"}:
             if isinstance(payload, list):
                 payload = [{**item, "user_id": profile["id"]} for item in payload]
             else:
