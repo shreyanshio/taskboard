@@ -1,6 +1,7 @@
 import asyncio
 import html
 import os
+import sqlite3
 import time
 from datetime import datetime
 from typing import Any
@@ -21,9 +22,104 @@ DEFAULT_PRIORITY = os.getenv("DEFAULT_TASK_PRIORITY", "normal")
 MAX_TASKS_PER_MESSAGE = int(os.getenv("MAX_TASKS_PER_MESSAGE", "25"))
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://taskboard7.up.railway.app").rstrip("/")
 
-# Shared in-memory store for Telegram login tokens.
-# Keys are token strings; values are dicts with user info filled by the bot.
-pending_telegram_tokens: dict[str, dict[str, Any]] = {}
+class TelegramTokenStore:
+    """Persistent, single-use Telegram login-token storage.
+
+    SQLite is sufficient here because tokens are short-lived and writes are tiny.
+    Set TELEGRAM_TOKEN_DB_PATH to a persistent Railway volume or another shared
+    filesystem when running more than one process.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        parent = os.path.dirname(os.path.abspath(path))
+        os.makedirs(parent, exist_ok=True)
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS telegram_login_tokens (
+                    token TEXT PRIMARY KEY,
+                    created_at REAL NOT NULL,
+                    telegram_id INTEGER,
+                    display_name TEXT,
+                    telegram_username TEXT,
+                    verified INTEGER NOT NULL DEFAULT 0,
+                    verify_chat_id INTEGER,
+                    verify_message_id INTEGER
+                )"""
+            )
+            conn.commit()
+
+    def create(self, token: str, created_at: float) -> None:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                "INSERT INTO telegram_login_tokens(token, created_at) VALUES (?, ?)",
+                (token, created_at),
+            )
+            conn.commit()
+
+    def get(self, token: str) -> dict[str, Any] | None:
+        with sqlite3.connect(self.path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM telegram_login_tokens WHERE token = ?",
+                (token,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def consume_verified(self, token: str, now: float, max_age: float = 300) -> dict[str, Any] | None:
+        """Atomically validate and consume a verified token exactly once."""
+        with sqlite3.connect(self.path) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM telegram_login_tokens WHERE token = ? AND verified = 1",
+                (token,),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return None
+            if now - float(row["created_at"]) > max_age:
+                conn.execute("DELETE FROM telegram_login_tokens WHERE token = ?", (token,))
+                conn.commit()
+                return None
+            conn.execute("DELETE FROM telegram_login_tokens WHERE token = ?", (token,))
+            conn.commit()
+            return dict(row)
+
+    def update(self, token: str, values: dict[str, Any]) -> None:
+        allowed = {
+            "telegram_id", "display_name", "telegram_username", "verified",
+            "verify_chat_id", "verify_message_id",
+        }
+        values = {k: v for k, v in values.items() if k in allowed}
+        if not values:
+            return
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        params = [int(v) if key == "verified" else v for key, v in values.items()]
+        params.append(token)
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                f"UPDATE telegram_login_tokens SET {assignments} WHERE token = ?",
+                params,
+            )
+            conn.commit()
+
+    def delete(self, token: str) -> None:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("DELETE FROM telegram_login_tokens WHERE token = ?", (token,))
+            conn.commit()
+
+    def purge_expired(self, cutoff: float) -> None:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("DELETE FROM telegram_login_tokens WHERE created_at < ?", (cutoff,))
+            conn.commit()
+
+
+TELEGRAM_TOKEN_DB_PATH = os.getenv(
+    "TELEGRAM_TOKEN_DB_PATH",
+    os.path.join(os.getenv("TMPDIR", "/tmp"), "taskboard_telegram_tokens.sqlite3"),
+)
+telegram_token_store = TelegramTokenStore(TELEGRAM_TOKEN_DB_PATH)
 
 
 class SupabaseError(RuntimeError):
@@ -351,12 +447,12 @@ async def require_linked_user(update: Update) -> dict[str, Any] | None:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Deep-link login flow: /start <token>
-    if context.args and context.args[0] in pending_telegram_tokens:
-        token = context.args[0]
-        entry = pending_telegram_tokens[token]
-        # Check expiry (5 minutes)
-        if time.time() - entry["created_at"] > 300:
-            del pending_telegram_tokens[token]
+    token = context.args[0] if context.args else ""
+    entry = telegram_token_store.get(token) if token else None
+    if entry:
+        now = time.time()
+        if now - float(entry["created_at"]) > 300:
+            telegram_token_store.delete(token)
             await update.message.reply_text("This login link has expired. Please try again from the TaskBoard website.")
             return
 
@@ -365,8 +461,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if tg_user.last_name:
             display_name += f" {tg_user.last_name}"
         username = tg_user.username or ""
-
-        entry.update({
+        telegram_token_store.update(token, {
             "telegram_id": tg_user.id,
             "display_name": display_name,
             "telegram_username": username,
@@ -379,10 +474,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"Tap the button below to sign in:",
             reply_markup=get_login_keyboard(callback_url),
         )
-        # Remember this message so we can delete it once login is confirmed
-        # (avoids a stale "Sign in" button sitting in the chat forever).
-        entry["verify_chat_id"] = update.effective_chat.id
-        entry["verify_message_id"] = sent.message_id
+        # Remember this message so it can be removed after login completes.
+        telegram_token_store.update(token, {
+            "verify_chat_id": update.effective_chat.id,
+            "verify_message_id": sent.message_id,
+        })
         return
 
     # Normal /start — show help, as buttons
