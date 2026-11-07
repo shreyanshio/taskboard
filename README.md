@@ -6,7 +6,7 @@
 
 A clean, single-page productivity dashboard to plan your day, track tasks, and stay consistent — with a built-in study timer, analytics, and a global leaderboard. 
 
-🔗 **[Live Demo → taskboard7.up.railway.app](https://taskboard7.up.railway.app/)**
+🔗 **[Live Demo →  taskboard7.up.railway.app](https://taskboard7.up.railway.app/)**
 
 ![HTML5](https://img.shields.io/badge/HTML5-E34F26?style=for-the-badge&logo=html5&logoColor=white)
 ![CSS3](https://img.shields.io/badge/CSS3-1572B6?style=for-the-badge&logo=css3&logoColor=white)
